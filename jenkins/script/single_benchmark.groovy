@@ -9,6 +9,69 @@ build_time = build_time.format('MM-dd-yyyy', TimeZone.getTimeZone('UTC'))
 def revision
 def target
 
+String getEffectiveRuntimeRegistry(scriptEnv) {
+    def pushRegistry = scriptEnv.push_registry?.trim()
+    return pushRegistry ? pushRegistry : scriptEnv.registry
+}
+
+String getRegistryPort(String registry, String defaultPort = '5000') {
+    def tokens = registry.tokenize(':')
+    return tokens.size() > 1 ? tokens[-1] : defaultPort
+}
+
+String getTunnelUser(scriptEnv) {
+    def tunnelUser = scriptEnv.registry_tunnel_user?.trim()
+    return tunnelUser ? tunnelUser : 'root'
+}
+
+String getTunnelKeyOption(scriptEnv) {
+    def keyPath = scriptEnv.registry_tunnel_key?.trim()
+    return keyPath ? "-i ${keyPath}" : ''
+}
+
+String getTunnelDestination(scriptEnv) {
+    return "${getTunnelUser(scriptEnv)}@${scriptEnv.registry_tunnel_host}"
+}
+
+String getUriHost(String rawValue) {
+    try {
+        return rawValue?.trim() ? new URI(rawValue).host : ''
+    } catch (Exception ignored) {
+        return ''
+    }
+}
+
+boolean usesLocalArtifactory(String artUrl) {
+    def artHost = getUriHost(artUrl)
+    return artHost in ['localhost', 'artifactory.local']
+}
+
+String getArtifactoryUploadUrl(String artUrl, String resultUrl) {
+    if (usesLocalArtifactory(artUrl)) {
+        def artUri = new URI(artUrl)
+        def resultHost = getUriHost(resultUrl)
+        if (resultHost) {
+            return new URI(
+                artUri.scheme,
+                artUri.userInfo,
+                resultHost,
+                artUri.port,
+                artUri.path,
+                artUri.query,
+                artUri.fragment
+            ).toString()
+        }
+    }
+    return artUrl
+}
+
+String resolveArtifactoryRepo(String artUrl) {
+    if (usesLocalArtifactory(artUrl)) {
+        return 'example-repo-local'
+    }
+    return 'auto_provision'
+}
+
 pipeline {
     options {
         buildDiscarder(logRotator(daysToKeepStr: '60', numToKeepStr: '2000'))
@@ -21,11 +84,17 @@ pipeline {
         string(name: 'workload', defaultValue: 'Kafka', description: '')
         string(name: 'platform', defaultValue: 'ICX', description: '')
         string(name: 'session', defaultValue: '', description: 'session id for full validation, combination with "date"_"full validation job id"_"wiki commit"_"cumulus commit"_"repo commit", for manual run, use "repo commit" is enough')
-        string(name: 'repo', defaultValue: 'https://github.com/intel-innersource/applications.benchmarking.benchmark.external-platform-hero-features.git', description: 'github repo address')
-        string(name: 'registry', defaultValue: '127.0.0.1:5000', description: 'docker registry')
-        string(name: 'instance_api', defaultValue: 'https://127.0.0.1:8899/local/api/instance/', description: 'get instance list api')
-        string(name: 'artifactory_url', defaultValue: 'http://127.0.0.1:8082/artifactory', description: 'artifactory url')
-        string(name: 'django_execution_result_url', defaultValue: 'https://127.0.0.1:8899/local/api/test_result/', description: 'store execution results')
+        string(name: 'repo', defaultValue: 'https://github.com/intel/workload-services-framework', description: 'github repo address')
+        string(name: 'registry', defaultValue: 'registry.local:5000', description: 'docker registry')
+        string(name: 'push_registry', defaultValue: '', description: 'registry endpoint used by runtime; falls back to registry when empty')
+        string(name: 'registry_tunnel_host', defaultValue: '', description: 'ssh host used to forward runtime registry to the remote registry')
+        string(name: 'registry_tunnel_user', defaultValue: '', description: 'ssh user for the registry tunnel')
+        string(name: 'registry_tunnel_key', defaultValue: '', description: 'ssh private key path for the registry tunnel')
+        string(name: 'registry_tunnel_remote_host', defaultValue: 'localhost', description: 'remote registry host reached from the ssh tunnel')
+        string(name: 'registry_tunnel_remote_port', defaultValue: '', description: 'remote registry port reached from the ssh tunnel; falls back to registry port when empty')
+        string(name: 'instance_api', defaultValue: 'https://portal.local/local/api/instance/', description: 'get instance list api')
+        string(name: 'artifactory_url', defaultValue: 'http://artifactory.local/artifactory', description: 'artifactory url')
+        string(name: 'django_execution_result_url', defaultValue: 'https://portal.local/local/api/test_result/', description: 'store execution results')
         string(name: 'commit_id', defaultValue: 'main', description: 'commit id of the provided repo, also could be branch name')
         booleanParam(name: 'emon', defaultValue: '', description: '')
         string(name: 'timeout', defaultValue: '60000,3600', description: 'timeout for execution, first one is for pod execution timeout, second one is for pod ready timeout.')
@@ -54,6 +123,29 @@ pipeline {
         JENKINS_SCRIPT_REPO = 'https://github.com/intel-sandbox/WSF-VaaS.git'
     }
     stages {
+        stage('Setup registry tunnel') {
+            when {
+                expression { return env.registry_tunnel_host?.trim() }
+            }
+            steps {
+                script {
+                    env.EFFECTIVE_RUNTIME_REGISTRY = getEffectiveRuntimeRegistry(env)
+                    def localBindHost = 'localhost'
+                    def bindPort = getRegistryPort(env.EFFECTIVE_RUNTIME_REGISTRY)
+                    def remoteHost = env.registry_tunnel_remote_host?.trim() ? env.registry_tunnel_remote_host.trim() : 'localhost'
+                    def remotePort = env.registry_tunnel_remote_port?.trim() ? env.registry_tunnel_remote_port.trim() : getRegistryPort(env.registry)
+                    def tunnelCommand = "ssh -fN -M -S ${env.WORKSPACE}/benchmark-registry-tunnel.sock " +
+                        "-o ExitOnForwardFailure=yes " +
+                        "-o StrictHostKeyChecking=no " +
+                        "-o UserKnownHostsFile=/dev/null " +
+                        "${getTunnelKeyOption(env)} " +
+                        "-L ${localBindHost}:${bindPort}:${remoteHost}:${remotePort} " +
+                        "${getTunnelDestination(env)}"
+                    sh "rm -f ${env.WORKSPACE}/benchmark-registry-tunnel.sock"
+                    sh tunnelCommand
+                }
+            }
+        }
         stage('Check WorkSpace clean'){
             steps {
                 script{
@@ -96,15 +188,18 @@ pipeline {
                     }
                     if (env.vm == true) {
                         currentBuild.displayName = "${display_name}_VM"
-                        env.platform_name = "${platform}-VM"Q
+                        env.platform_name = "${platform}-VM"
                     }
                     else
                     {
                         currentBuild.displayName = "${display_name}"
                         env.platform_name = platform
                     }
+                    env.EFFECTIVE_RUNTIME_REGISTRY = env.EFFECTIVE_RUNTIME_REGISTRY ?: getEffectiveRuntimeRegistry(env)
                     // sh "rm -rf validation && git clone ${env.repo} validation && cd validation && git checkout ${env.commit_id}"
-                    sh "python3 script/jenkins/script/cluster_generate.py ${controller_ip} ${worker_ip_list} ${platform} ${instance_api} ${registry}"
+                    sh 'python3 script/jenkins/script/cluster_generate.py ' +
+                        "\"${controller_ip}\" \"${worker_ip_list}\" \"${platform}\" " +
+                        "\"${instance_api}\" \"${env.EFFECTIVE_RUNTIME_REGISTRY}\""
                 }
             }
         }
@@ -128,24 +223,27 @@ pipeline {
                     echo "Fatal error: benchmark failed."
                     currentBuild.result = 'FAILURE'
                 }
-                println "Create and publish artifacts."
-                benchmark_result = sh (script:". /etc/profile > /dev/null 2>&1 && ${workspace}/script/jenkins/script/benchmark $build_session artifacts", returnStatus:true)
                 def art_url="${artifactory_url}"
-                out = sh (script:"ls ${workspace}/validation/build/workload/${workload}/Testing/Temporary", returnStatus:true)
-                if (out == 0) {
-                    def server = Artifactory.newServer url: art_url, credentialsId: 'jfrog'
+                def art_upload_url = getArtifactoryUploadUrl(art_url, django_execution_result_url)
+                def art_repo = resolveArtifactoryRepo(art_url)
+                println "Create and publish artifacts."
+                benchmark_result = sh (script:". /etc/profile > /dev/null 2>&1 && artifactory_repo=${art_repo} ${workspace}/script/jenkins/script/benchmark $build_session artifacts", returnStatus:true)
+                def out = sh (script:"ls ${workspace}/validation/build/workload/${workload}/Testing/Temporary", returnStatus:true)
+                if (out == 0 && art_upload_url?.trim()) {
+                    try {
+                        def server = Artifactory.newServer url: art_upload_url, credentialsId: 'jfrog'
                         def uploadSpec = """{
                         "files": [
                         {
                         "pattern": "logs/",
-                        "target": "auto_provision/${build_session}/${platform_name}_${workload}_${BUILD_ID}/",
+                        "target": "${art_repo}/${build_session}/${platform_name}_${workload}_${BUILD_ID}/",
                         "props": "retention.days=365",
                         "recursive": "true",
                         "flat": "false"
                         },
                         {
                         "pattern": "*${workload}.json",
-                        "target": "auto_provision/${build_session}/execution/${platform_name}_${workload}_${BUILD_ID}.json",
+                        "target": "${art_repo}/${build_session}/execution/${platform_name}_${workload}_${BUILD_ID}.json",
                         "props": "retention.days=365",
                         "recursive": "true",
                         "flat": "false"
@@ -154,6 +252,11 @@ pipeline {
                         }"""
                         server.bypassProxy = true
                         server.upload spec: uploadSpec
+                    } catch (err) {
+                        echo "Skipping artifact upload because Artifactory is unavailable: ${err.getMessage()}"
+                    }
+                } else {
+                    echo "Skipping artifact upload because no workload artifacts were produced or artifactory_url is empty."
                 }
                 script {
                     if(fileExists("${workspace}/run_uri")){
@@ -164,6 +267,13 @@ pipeline {
                         }
                     }
                 }
+                if (env.registry_tunnel_host?.trim()) {
+                    sh(
+                        script: "ssh -S ${env.WORKSPACE}/benchmark-registry-tunnel.sock -O exit ${getTunnelKeyOption(env)} ${getTunnelDestination(env)} || true",
+                        returnStatus: true
+                    )
+                    sh "rm -f ${env.WORKSPACE}/benchmark-registry-tunnel.sock"
+                }
                 cleanWs()
                 if (benchmark_result != 0) {
                     echo "Fatal error: result failed."
@@ -173,4 +283,3 @@ pipeline {
         }
     }
 }
-

@@ -25,11 +25,17 @@ pipeline {
     string(name: 'front_job_id', defaultValue: '', description: 'Related job in frontend.')
     string(name: 'platforms', defaultValue: 'ICX', description: 'Run validation on specific platforms, separate with comma, e.g: SPR,ICX, default as null will run tests on all supported platforms.')
     string(name: 'sf_commit', defaultValue: 'main', description: '')
-    string(name: 'repo', defaultValue: 'https://github.com/intel-innersource/applications.benchmarking.benchmark.external-platform-hero-features.git', description: 'github repo address')
-    string(name: 'registry', defaultValue: '192.168.0.160:5000', description: 'docker registry')
-    string(name: 'instance_api', defaultValue: 'https://127.0.0.1:8899/local/api/job/', description: 'frontend api')
-    string(name: 'artifactory_url', defaultValue: 'http://127.0.0.1:8082/artifactory', description: 'artifactory url')
-    string(name: 'django_execution_result_url', defaultValue: 'https://127.0.0.1:8899/local/api/test_result/', description: 'store execution results')
+    string(name: 'repo', defaultValue: 'https://github.com/intel/workload-services-framework', description: 'github repo address')
+    string(name: 'registry', defaultValue: 'registry.local:5000', description: 'docker registry')
+    string(name: 'push_registry', defaultValue: '', description: 'registry endpoint used by the local build/push path; falls back to registry when empty')
+    string(name: 'registry_tunnel_host', defaultValue: '', description: 'ssh host used to forward push_registry to the remote registry')
+    string(name: 'registry_tunnel_user', defaultValue: '', description: 'ssh user for the registry tunnel')
+    string(name: 'registry_tunnel_key', defaultValue: '', description: 'ssh private key path for the registry tunnel')
+    string(name: 'registry_tunnel_remote_host', defaultValue: 'localhost', description: 'remote registry host reached from the ssh tunnel')
+    string(name: 'registry_tunnel_remote_port', defaultValue: '', description: 'remote registry port reached from the ssh tunnel; falls back to registry port when empty')
+    string(name: 'instance_api', defaultValue: 'https://portal.local/local/api/job/', description: 'frontend api')
+    string(name: 'artifactory_url', defaultValue: 'http://artifactory.local/artifactory', description: 'artifactory url')
+    string(name: 'django_execution_result_url', defaultValue: 'https://portal.local/local/api/test_result/', description: 'store execution results')
     string(name: 'session', defaultValue: '', description: 'used for separate testing.')
     string(name: 'workload_list', defaultValue: '', description: 'separated with ";",e.g: BoringSSL;Bert-Large. Or Encode-3dnr;Nginx  This parameter must match with "customer"')
     choice(name: 'customer', choices: ['main', 'tencent', 'ali'], description: 'main stands for mainline workloads direct under workload folder not customer workloads')
@@ -47,7 +53,7 @@ pipeline {
     string(name: 'workload_params', defaultValue: '', description: 'workload exposed params key-value pair. e.g: param1=value1 param2=value2')
     string(name: 'workload_test_config_yaml', defaultValue: '', description: 'low end or high end configuration file from workload folder, will ignore workload_params', trim: true)
     string(name: 'controller_ip', defaultValue: '', description: 'controller ip')
-    string(name: 'worker_ip_list', defaultValue: '', description: 'worker ips, join with \',\' ')
+    string(name: 'worker_ip_list', defaultValue: '', description: 'worker ips, join with \,',' ')
     booleanParam(name: 'k8s_reset', defaultValue: false, description: 'Reset k8s cluster, be cautious to enable it as it will only setup k8s with selected nodes.')
     string(name: 'ctest_option', defaultValue: '', description: 'ctest.sh options like --loop to run the ctest commands sequentially.', trim: true)
   }
@@ -86,6 +92,12 @@ pipeline {
                         [$class: "StringParameterValue", name: "front_job_id", value: "${env.front_job_id}"],
                         [$class: "StringParameterValue", name: "commit", value: "${env.sf_commit}"],
                         [$class: "StringParameterValue", name: "registry", value: "${env.registry}"],
+                        [$class: "StringParameterValue", name: "push_registry", value: "${env.push_registry}"],
+                        [$class: "StringParameterValue", name: "registry_tunnel_host", value: "${env.registry_tunnel_host}"],
+                        [$class: "StringParameterValue", name: "registry_tunnel_user", value: "${env.registry_tunnel_user}"],
+                        [$class: "StringParameterValue", name: "registry_tunnel_key", value: "${env.registry_tunnel_key}"],
+                        [$class: "StringParameterValue", name: "registry_tunnel_remote_host", value: "${env.registry_tunnel_remote_host}"],
+                        [$class: "StringParameterValue", name: "registry_tunnel_remote_port", value: "${env.registry_tunnel_remote_port}"],
                         [$class: "StringParameterValue", name: "platform", value: "${env.platforms}"],
                         [$class: "StringParameterValue", name: "workload_list", value: "${wl_list}"],
                         [$class: "StringParameterValue", name: "repo", value: "${env.repo}"]
@@ -158,6 +170,12 @@ pipeline {
 											[$class: "StringParameterValue", name: "platform", value: "${pvar}"],
 											[$class: "StringParameterValue", name: "repo", value: "${env.repo}"],
 											[$class: "StringParameterValue", name: "registry", value: "${env.registry}"],
+                                            [$class: "StringParameterValue", name: "push_registry", value: "${env.push_registry}"],
+                                            [$class: "StringParameterValue", name: "registry_tunnel_host", value: "${env.registry_tunnel_host}"],
+                                            [$class: "StringParameterValue", name: "registry_tunnel_user", value: "${env.registry_tunnel_user}"],
+                                            [$class: "StringParameterValue", name: "registry_tunnel_key", value: "${env.registry_tunnel_key}"],
+                                            [$class: "StringParameterValue", name: "registry_tunnel_remote_host", value: "${env.registry_tunnel_remote_host}"],
+                                            [$class: "StringParameterValue", name: "registry_tunnel_remote_port", value: "${env.registry_tunnel_remote_port}"],
 											[$class: "StringParameterValue", name: "instance_api", value: "${env.instance_api}"],
 											[$class: "StringParameterValue", name: "artifactory_url", value: "${env.artifactory_url}"],
                                             [$class: "StringParameterValue", name: "django_execution_result_url", value: "${env.django_execution_result_url}"],
@@ -204,4 +222,3 @@ pipeline {
         }
     }
 }
-

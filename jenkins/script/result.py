@@ -63,6 +63,7 @@ class Execution(object):
         test_result_folder = os.path.join(os.getenv("WORKSPACE",""), "result")
         customer = os.getenv('customer', 'main')
         art_url = os.getenv("artifactory_url","")
+        art_repo = os.getenv("artifactory_repo", "auto_provision")
         art_host = urlparse(art_url).netloc
         if customer == 'ali':
             art_log_url = 'https://af01p-sh.devtools.intel.com/artifactory/platform_hero_ali-sh-local/auto_provision/%s/%s_%s_%s/logs' % (
@@ -74,11 +75,11 @@ class Execution(object):
             ctest_folder = os.path.join(os.getenv("WORKSPACE",""), 'validation/build/workload/customer/tencent', workload, 'Testing/Temporary')
         else:
             
-            art_log_url = 'http://%s/ui/native/auto_provision/%s/%s_%s_%s/logs' % (
-                art_host, session_id, platform, workload, build_id)
+            art_log_url = 'http://%s/ui/native/%s/%s/%s_%s_%s/logs' % (
+                art_host, art_repo, session_id, platform, workload, build_id)
             ctest_folder = os.path.join(os.getenv("WORKSPACE",""), 'validation/build/workload', workload, 'Testing/Temporary')
-        execution_json = 'http://%s/ui/native/auto_provision/%s/execution/%s_%s_%s.json' % (
-                art_host, session_id, platform, workload, build_id)
+        execution_json = 'http://%s/ui/native/%s/%s/execution/%s_%s_%s.json' % (
+                art_host, art_repo, session_id, platform, workload, build_id)
 
         # check test case details from ctest folder, pass/fail
         failed_test_case = []
@@ -251,28 +252,9 @@ class Execution(object):
                     benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name] = {}
                     benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name]['metrics'] = {}
                 cumulus_url = "https://cumulus-dashboard.intel.com/services-framework/run_uri/%s" % run_uri
-                #benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name][
-                #    'cumulus_url'] = cumulus_url
                 benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name][
                     'test_time'] = execution_time
                 benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name]['sha256'] = case_sha256
-                # get hw config
-                hw_config_file = os.path.join(test_result_folder, folder_name, 'cluster_config')
-
-                if os.path.exists(hw_config_file):
-                    with open(hw_config_file, 'r') as fl:
-                        hw_config = fl.read().split("\n")[0]
-                else:
-                    hw_config = '0'
-
-                cumulus_config = os.path.join(test_result_folder, folder_name, 'cumulus-config.yaml')
-                benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name]['config'] = hw_config
-                benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name]['test_config'] = test_config
-                benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name][
-                    'wiki_platform_version'] = wiki_platform_commit
-
-                # add all kpi
-                # kpi_log_name = "kpi_*%s.log" % (benchmark_name.lower())
                 kpi_log_name = "kpi_*%s.log" % (benchmark_name)
                 kpi_log = os.path.join(test_result_folder, "kpi/%s" % kpi_log_name)
                 all_metrics_cmd = "cat %s" % (str(kpi_log))
@@ -297,7 +279,6 @@ class Execution(object):
                                     itr_value = metric.split(':')[1]
                                 benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name]['itr'][itr] = itr_value
 
-                # case return fail if no kpi
                 if not bool(
                         benchmark_execution_info['execution'][test_platform][workload]['kpi'][test_name]['metrics']):
                     real_case_name = 'test_' + test_name
@@ -313,11 +294,9 @@ class Execution(object):
                             benchmark_execution_info['execution'][test_platform][workload]['Passed'] - 1
                         os.system(
                             "echo %s >> %s/logs/ctest/LastTestsFailed.log" % (real_case_name, os.getenv("WORKSPACE","")))
-        #if test failed with no pkb.log, also mark it as failed
         for item in os.listdir(test_result_folder):
             if os.path.isdir(item) and item.startswith('logs-'):
                 test_dir = os.path.join(test_result_folder,item)
-                # if not find pkb.log
                 if not sorted(pathlib.Path(test_dir).glob('**/pkb.log')):
                     test_name = item.replace('logs-','')
                     cluster_type = test_name.split("_")[0]
@@ -342,7 +321,6 @@ class Execution(object):
                             benchmark_execution_info['execution'][test_platform][workload]['Passed'] - 1
                         os.system(
                             "echo %s >> %s/logs/ctest/LastTestsFailed.log" % (real_case_name, os.getenv("WORKSPACE","")))
-        # get bom info
         bom_folder = os.path.join(test_result_folder, "bom")
         if os.path.exists(bom_folder):
             for bom_file in os.listdir(bom_folder):
@@ -397,7 +375,6 @@ class Execution(object):
                 result_to_store_temp['kpi_value'] = '-'
                 result_to_store_temp['test_result'] = 'FAILED'
                 timestamp = datetime.datetime.now().strftime("%Y/%m/%d, %H:%M:%S") 
-                # promotion needed with timestamp
                 result_to_store_temp['test_date'] = timestamp
                 result_to_store_temp['created'] = timestamp
                 result_to_store_temp['modified'] = timestamp
@@ -424,12 +401,10 @@ class Execution(object):
                     result_to_store_temp['test_result'] = 'PASS'
                 result_to_store_temp['log_url'] = dict_info_kpis_and_others["log_url"]
                 art_url = os.getenv("artifactory_url","")
-                art_host = urlparse(art_url).netloc
-                result_to_store_temp['jenkins_job_id'] = "http://" + art_host.split("8082")[0] + "8080/job/benchmark/" + os.getenv("BUILD_ID","")
+                art_host = urlparse(art_url).hostname or 'jenkins.local'
+                result_to_store_temp['jenkins_job_id'] = f"http://{art_host}:8080/job/benchmark/{os.getenv('BUILD_ID', '')}"
                 result_to_store_temp['test_time'] = dict_info_kpis[kpi]['test_time']
-                # result_to_store_temp['cumulus_uri'] = dict_info_kpis[kpi]['cumulus_url']
                 timestamp = datetime.datetime.now().strftime("%Y/%m/%d, %H:%M:%S") 
-                # promotion needed with timestamp
                 result_to_store_temp['test_date'] = timestamp
                 result_to_store_temp['created'] = timestamp
                 result_to_store_temp['modified'] = timestamp
@@ -460,7 +435,6 @@ class Execution(object):
                         send_email(sender, receivers, smtp, port, email_password, content, subject)
                         content = {"data": f"Send email from {sender}  to {';'.join(receivers)}"}
                         requests.post(provision_log_url, json=content, verify="script/jenkins/script/cert.pem", headers={'Content-Type': 'application/json'}, auth=(portal_username, portal_password))
-                    # print(sender, receivers,smtp, port, email_password, content)
                 except Exception as e:
                     print("An exception occurs...")
                     print(e)
@@ -478,7 +452,13 @@ class Execution(object):
 if __name__ == "__main__":
     print(sys.argv)
     session, platform, workload, final_config = sys.argv[1: 5]
-    front_job_id, platform, workload, store_url = sys.argv[5: 9]
+    if len(sys.argv) >= 9:
+        front_job_id, platform, workload, store_url = sys.argv[5: 9]
+    elif len(sys.argv) == 8:
+        front_job_id = ""
+        platform, workload, store_url = sys.argv[5: 8]
+    else:
+        raise ValueError(f"Unexpected arguments for result.py: {sys.argv}")
     benchmark_execution = Execution()
     benchmark_execution_info = benchmark_execution.generate_benchmark_execution_info(session, platform, workload, final_config)
     benchmark_execution.store_benchmark_execution_info(benchmark_execution_info, front_job_id, platform, workload, store_url)
